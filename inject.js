@@ -68,7 +68,8 @@
     panelLocked: false,
     collapsed: false,
     panelX: 20,
-    panelY: 20
+    panelY: 20,
+    presetName: "custom"
   });
 
   const currentState = Object.seal({ ...DEFAULT_CONFIG });
@@ -108,6 +109,7 @@
       currentState.muteActive = Boolean(parsed.muteActive);
       currentState.panelLocked = Boolean(parsed.panelLocked);
       currentState.collapsed = Boolean(parsed.collapsed);
+      if (typeof parsed.presetName === "string") currentState.presetName = parsed.presetName;
       if (typeof parsed.panelX === "number") currentState.panelX = Math.max(0, parsed.panelX);
       if (typeof parsed.panelY === "number") currentState.panelY = Math.max(0, parsed.panelY);
     } catch (e) {}
@@ -141,9 +143,21 @@
     if (typeof config.enabled === "boolean") currentState.enabled = config.enabled;
     if (typeof config.themeUrl === "string") currentState.themeUrl = config.themeUrl;
     if (typeof config.customColor === "string") currentState.customColor = config.customColor;
+    if (typeof config.presetName === "string") currentState.presetName = config.presetName;
     saveStateToLocalStorage();
+    syncStateToExtension();
     if (window.__OmniLordPanelReady) window.__OmniLordPanelReady.applyFromState();
     if (typeof AudioInterceptor !== "undefined") AudioInterceptor.pushParamsFast();
+  }
+
+  let syncTimeout = null;
+  function syncStateToExtension() {
+    if (syncTimeout) clearTimeout(syncTimeout);
+    syncTimeout = setTimeout(() => {
+      const snapshot = {};
+      ["enabled","clearGain","masterGain","rageBoost","bitrate","stereoWidth","eq1","eq2","eq3","eq4","eq5","eq6","noiseGate","deEss","bassBoost","autoLevel","turboActive","ultraTurboActive","presetName"].forEach((k) => { snapshot[k] = currentState[k]; });
+      window.postMessage({ source: "Omni-Universal-Lord", type: "OMNI_STATE_SYNC", state: snapshot }, "*");
+    }, 300);
   }
 
   window.addEventListener("message", (event) => {
@@ -154,6 +168,9 @@
     if (event.data.type === "OMNI_THEME" && typeof event.data.themeUrl === "string") {
       currentState.themeUrl = event.data.themeUrl;
       if (window.__OmniLordPanelReady) window.__OmniLordPanelReady.applyTheme(event.data.themeUrl);
+    }
+    if (event.data.type === "OMNI_PLAYER_REQUEST") {
+      PlayerEngine.handleRequest(event.data);
     }
   });
 
@@ -222,7 +239,6 @@
 
                     if (mute > 0.5) { processed[ch] = 0; continue; }
 
-                    // Noise gate: attenuate signals below threshold
                     if (noiseGate > 0) {
                         const gateThreshold = noiseGate / 100 * 0.015;
                         const gateAttack = 0.01;
@@ -236,7 +252,6 @@
                         s *= this._gateOpen[ch];
                     }
 
-                    // Bass boost: simple low-frequency emphasis via one-pole filter
                     if (bassBoost > 0) {
                         const bassAmt = bassBoost / 100;
                         const bassAlpha = 0.15;
@@ -256,7 +271,6 @@
                     s *= 500.0;
                     s = Math.max(-0.9999, Math.min(0.9999, s));
 
-                    // De-esser: detect high-frequency energy and reduce harsh sibilance
                     if (deEss > 0) {
                         const deEssAmt = deEss / 100;
                         const hfAlpha = 0.85;
@@ -272,7 +286,6 @@
                         this._prevSample[ch] = s;
                     }
 
-                    // Auto-leveling: smooth envelope follower to normalize output
                     if (autoLevel > 0) {
                         const levelAmt = autoLevel / 100;
                         const targetLevel = 0.5;
@@ -416,6 +429,8 @@
           this.chains.push(chain);
           window.__OmniLordAnalyser = analyserNode;
 
+          PlayerEngine.connectToChain(chain);
+
           const cleanupChain = () => this.cleanupChain(chain);
           audioTracks.forEach((track) => track.addEventListener?.("ended", cleanupChain, { once: true }));
           this.pushParamsFast();
@@ -500,6 +515,135 @@
     }
   };
 
+  const PlayerEngine = {
+    library: [],
+    currentIndex: -1,
+    audioEl: null,
+    sourceNode: null,
+    gainNode: null,
+    playing: false,
+    objectUrls: new Map(),
+
+    init() {
+      this.audioEl = new Audio();
+      this.audioEl.crossOrigin = "anonymous";
+      this.audioEl.addEventListener("timeupdate", () => this.broadcastState());
+      this.audioEl.addEventListener("play", () => { this.playing = true; this.broadcastState(); });
+      this.audioEl.addEventListener("pause", () => { this.playing = false; this.broadcastState(); });
+      this.audioEl.addEventListener("ended", () => this.next());
+      this.audioEl.addEventListener("loadedmetadata", () => this.broadcastState());
+    },
+
+    ensureNodes() {
+      const ctx = ensureProcessingContext();
+      if (!ctx) return null;
+      if (!this.sourceNode) {
+        try {
+          this.sourceNode = ctx.createMediaElementSource(this.audioEl);
+          this.gainNode = ctx.createGain();
+          this.gainNode.gain.value = 1.0;
+          this.sourceNode.connect(this.gainNode);
+        } catch (e) { return null; }
+      }
+      return ctx;
+    },
+
+    connectToChain(chain) {
+      if (!this.gainNode || !chain || !chain.workletNode) return;
+      try { this.gainNode.connect(chain.workletNode); } catch (e) {}
+    },
+
+    connectToAllChains() {
+      if (!this.gainNode) return;
+      AudioInterceptor.chains.forEach((chain) => this.connectToChain(chain));
+    },
+
+    handleRequest(req) {
+      const action = req.action;
+      if (action === "upload") { this.addTrack(req.item, req.data); }
+      else if (action === "play") { this.play(req.id); }
+      else if (action === "pause") { this.pause(); }
+      else if (action === "next") { this.next(); }
+      else if (action === "previous") { this.previous(); }
+      else if (action === "seek") { this.seek(req.value); }
+      this.broadcastState();
+    },
+
+    addTrack(item, data) {
+      if (!item || !item.id || !data) return;
+      const blob = new Blob([data], { type: item.type || "audio/*" });
+      const url = URL.createObjectURL(blob);
+      this.objectUrls.set(item.id, url);
+      this.library.push({ id: item.id, name: item.name, url: url });
+      if (this.library.length === 1) { this.currentIndex = 0; this.loadCurrent(); }
+      this.broadcastState();
+    },
+
+    loadCurrent() {
+      if (this.currentIndex < 0 || this.currentIndex >= this.library.length) return;
+      const track = this.library[this.currentIndex];
+      if (!track) return;
+      this.audioEl.src = track.url;
+      this.audioEl.load();
+    },
+
+    async play(id) {
+      const ctx = ensureProcessingContext();
+      if (ctx && ctx.state === "suspended") await ctx.resume();
+      this.ensureNodes();
+      if (id) {
+        const idx = this.library.findIndex((t) => t.id === id);
+        if (idx >= 0) { this.currentIndex = idx; this.loadCurrent(); }
+      }
+      if (this.currentIndex < 0 && this.library.length) { this.currentIndex = 0; this.loadCurrent(); }
+      if (this.currentIndex < 0) return;
+      this.connectToAllChains();
+      try { await this.audioEl.play(); } catch (e) {}
+      this.broadcastState();
+    },
+
+    pause() { this.audioEl.pause(); this.broadcastState(); },
+
+    next() {
+      if (!this.library.length) return;
+      this.currentIndex = (this.currentIndex + 1) % this.library.length;
+      this.loadCurrent();
+      if (this.playing) this.play();
+      else this.broadcastState();
+    },
+
+    previous() {
+      if (!this.library.length) return;
+      this.currentIndex = (this.currentIndex - 1 + this.library.length) % this.library.length;
+      this.loadCurrent();
+      if (this.playing) this.play();
+      else this.broadcastState();
+    },
+
+    seek(fraction) {
+      if (!this.audioEl.duration) return;
+      this.audioEl.currentTime = Math.max(0, Math.min(1, fraction)) * this.audioEl.duration;
+      this.broadcastState();
+    },
+
+    broadcastState() {
+      const track = this.library[this.currentIndex];
+      window.postMessage({
+        source: "Omni-Universal-Lord",
+        type: "OMNI_PLAYER_STATE",
+        state: {
+          currentId: track ? track.id : null,
+          playing: this.playing,
+          currentTime: this.audioEl.currentTime || 0,
+          duration: this.audioEl.duration || 0,
+          trackCount: this.library.length
+        }
+      }, "*");
+    }
+  };
+
+  PlayerEngine.init();
+  setInterval(() => { if (PlayerEngine.playing) PlayerEngine.broadcastState(); }, 1000);
   const nativeReplaceTrack = window.RTCRtpSender?.prototype?.replaceTrack;
 
   const watchedSenders = new WeakSet();
@@ -920,6 +1064,17 @@
                 <button id="btn-mute" class="oul-btn">MUTE</button>
                 <button id="btn-reset" class="oul-btn reset">RESET</button>
             </div>
+
+            <div class="oul-player">
+                <div class="oul-lbl">CALL AUDIO PLAYER <span id="lbl-playerTrack">No track</span></div>
+                <div class="oul-player-controls">
+                    <button id="btn-prev" class="oul-btn">PREV</button>
+                    <button id="btn-play" class="oul-btn">PLAY</button>
+                    <button id="btn-next" class="oul-btn">NEXT</button>
+                </div>
+                <input id="oul-seek" type="range" min="0" max="1000" step="1" value="0" style="width:100%;margin-top:6px" />
+                <div class="oul-player-meta"><span id="lbl-playerTime">0:00 / 0:00</span><span>Boosted into calls</span></div>
+            </div>
         </div>
       `;
       document.body.appendChild(panel);
@@ -938,12 +1093,14 @@
         currentState.collapsed = !currentState.collapsed;
         panelBody.style.display = currentState.collapsed ? "none" : "block";
         saveStateToLocalStorage();
+        syncStateToExtension();
       });
 
       btnLock.addEventListener("click", () => {
         currentState.panelLocked = !currentState.panelLocked;
         btnLock.classList.toggle("active", currentState.panelLocked);
         saveStateToLocalStorage();
+        syncStateToExtension();
       });
 
       btnUltra.addEventListener("click", () => {
@@ -954,6 +1111,7 @@
         btnTurbo.textContent = "TURBO (OFF)";
         btnTurbo.classList.remove("active");
         saveStateToLocalStorage();
+        syncStateToExtension();
         AudioInterceptor.pushParamsFast();
       });
 
@@ -965,6 +1123,7 @@
         btnUltra.textContent = "ULTRA (OFF)";
         btnUltra.classList.remove("active");
         saveStateToLocalStorage();
+        syncStateToExtension();
         AudioInterceptor.pushParamsFast();
       });
 
@@ -973,21 +1132,49 @@
         btnMute.textContent = currentState.muteActive ? "UNMUTE" : "MUTE";
         btnMute.classList.toggle("active", currentState.muteActive);
         saveStateToLocalStorage();
+        syncStateToExtension();
         AudioInterceptor.pushParamsFast();
       });
 
-      btnReset.addEventListener("click", () => { this.resetToDefaults(); });
+      btnReset.addEventListener("click", () => { this.resetToDefaults(); syncStateToExtension(); });
 
-      document.querySelectorAll('#oul-panel input[type="range"]').forEach((input) => {
+      const btnPlay = document.getElementById("btn-play");
+      const btnPrev = document.getElementById("btn-prev");
+      const btnNext = document.getElementById("btn-next");
+      const seekBar = document.getElementById("oul-seek");
+      if (btnPlay) btnPlay.addEventListener("click", () => PlayerEngine.play());
+      if (btnPrev) btnPrev.addEventListener("click", () => PlayerEngine.previous());
+      if (btnNext) btnNext.addEventListener("click", () => PlayerEngine.next());
+      if (seekBar) seekBar.addEventListener("change", () => PlayerEngine.seek(Number(seekBar.value) / 1000));
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== window || event.data?.source !== "Omni-Universal-Lord") return;
+        if (event.data.type === "OMNI_PLAYER_STATE") {
+          const s = event.data.state;
+          const trackEl = document.getElementById("lbl-playerTrack");
+          const timeEl = document.getElementById("lbl-playerTime");
+          const playBtn = document.getElementById("btn-play");
+          if (trackEl) trackEl.textContent = s.playing ? "Playing" : s.currentId ? "Paused" : "No track";
+          if (playBtn) playBtn.textContent = s.playing ? "PAUSE" : "PLAY";
+          if (timeEl) {
+            const fmt = (v) => { if (!Number.isFinite(v) || v < 0) return "0:00"; return Math.floor(v / 60) + ":" + String(Math.floor(v % 60)).padStart(2, "0"); };
+            timeEl.textContent = fmt(s.currentTime) + " / " + fmt(s.duration);
+          }
+        }
+      });
+
+      document.querySelectorAll('#oul-panel input[type="range"][data-param]').forEach((input) => {
         const preventScroll = (e) => e.stopPropagation();
         input.addEventListener("touchstart", preventScroll, { passive: true });
         input.addEventListener("touchmove", preventScroll, { passive: true });
         const updateVal = (e) => {
           const param = e.target.dataset.param;
           currentState[param] = parseFloat(e.target.value);
+          currentState.presetName = "custom";
           this.updateValueLabel(param);
           AudioInterceptor.schedulePushParams();
           debouncedSaveState();
+          syncStateToExtension();
         };
         input.addEventListener("input", updateVal);
         input.addEventListener("change", updateVal);
@@ -1070,6 +1257,9 @@
         .oul-btn.active, .oul-btn:hover { background: var(--accent); color: #000; box-shadow: 0 0 10px var(--accent); }
         .oul-btn.ultra.active { background: #ff4fd8; border-color: #ff4fd8; color: #fff; box-shadow: 0 0 14px #ff4fd8; }
         .oul-btn.turbo.active { background: #ffaa00; border-color: #ffaa00; color: #000; box-shadow: 0 0 12px #ffaa00; }
+        .oul-player { border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 8px; }
+        .oul-player-controls { display: flex; gap: 6px; margin-top: 4px; }
+        .oul-player-meta { display: flex; justify-content: space-between; font-size: 9px; color: #65788C; margin-top: 4px; }
       `;
       document.head.appendChild(style);
     }
