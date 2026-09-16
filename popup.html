@@ -111,6 +111,26 @@
     <button class="preset-btn" data-preset="ultra">Ultra</button>
   </div>
 
+  <section class="player-card">
+    <div class="player-heading">
+      <div>
+        <span class="eyebrow">CALL AUDIO PLAYER</span>
+        <h2 id="playerTitle">No track loaded</h2>
+      </div>
+      <span class="track-count" id="trackCount">0/30</span>
+    </div>
+    <input id="audioPicker" class="audio-picker" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm" multiple />
+    <label class="upload-btn" for="audioPicker">Upload up to 30 tracks</label>
+    <div class="player-controls">
+      <button class="player-btn" id="prevTrack" aria-label="Previous track">PREV</button>
+      <button class="player-btn player-main" id="playPause" aria-label="Play or pause">PLAY</button>
+      <button class="player-btn" id="nextTrack" aria-label="Next track">NEXT</button>
+    </div>
+    <input id="playerSeek" class="slider" type="range" min="0" max="1000" step="1" value="0" aria-label="Track progress" />
+    <div class="player-meta"><span id="playerTime">0:00 / 0:00</span><span>Boosted into active calls</span></div>
+    <ol class="track-list" id="trackList"></ol>
+  </section>
+
   <div class="info-box">
     <p>Works on supported Messenger, Facebook, Instagram, Discord, WhatsApp, Telegram, and imo web calls. Audio and video tracks stay together when a call changes camera or connection region.</p>
   </div>
