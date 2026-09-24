@@ -416,6 +416,10 @@
             return filter;
           });
           const analyserNode = audioCtx.createAnalyser();
+          const mixGain = audioCtx.createGain();
+          // This destination track is the only outgoing track returned to the call.
+          // Both the processed microphone and the player feed this explicit mixer.
+          mixGain.gain.value = 1;
           analyserNode.fftSize = 512;
           source.connect(workletNode);
           let lastNode = workletNode;
@@ -424,7 +428,8 @@
             lastNode = eqNode;
           }
           lastNode.connect(analyserNode);
-          analyserNode.connect(destination);
+          analyserNode.connect(mixGain);
+          mixGain.connect(destination);
 
           destination.stream.getAudioTracks().forEach((track) => {
             track.__omniLordProcessed = true;
@@ -436,7 +441,7 @@
             ...mediaStream.getTracks().filter((track) => track.kind !== "audio")
           ]);
 
-          const chain = { source, workletNode, eqNodes, analyserNode, destination, sourceTracks: audioTracks, sourceIds, outStream };
+          const chain = { source, workletNode, eqNodes, analyserNode, mixGain, destination, sourceTracks: audioTracks, sourceIds, outStream, sender: null };
           this.chains.push(chain);
           window.__OmniLordAnalyser = analyserNode;
 
@@ -460,6 +465,9 @@
       try { chain.workletNode?.disconnect(); } catch (e) {}
       try { chain.eqNodes?.forEach((n) => n.disconnect()); } catch (e) {}
       try { chain.analyserNode?.disconnect(); } catch (e) {}
+      try { chain.mixGain?.disconnect(); } catch (e) {}
+      try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
+      if (!this.chains.filter((item) => item !== chain).length) PlayerEngine.handleCallEnded();
       try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
       this.chains = this.chains.filter((item) => item !== chain);
       window.__OmniLordAnalyser = this.chains.at(-1)?.analyserNode || null;
@@ -563,12 +571,17 @@
     },
 
     connectToChain(chain) {
+      if (!this.transmitGain || !chain || !chain.mixGain || this.connectedChains.has(chain)) return;
+      // Mix after the microphone DSP, then feed the MediaStreamDestination track that
+      // getUserMedia/replaceTrack supplies to the peer connection.
+      try { this.transmitGain.connect(chain.mixGain); this.connectedChains.add(chain); } catch (_) {}
       if (!this.transmitGain || !chain || !chain.workletNode || this.connectedChains.has(chain)) return;
       try { this.transmitGain.connect(chain.workletNode); this.connectedChains.add(chain); } catch (_) {}
     },
     connectToAllChains() { AudioInterceptor.chains.forEach((chain) => this.connectToChain(chain)); },
     disconnectFromChain(chain) {
       if (!this.connectedChains.has(chain) || !this.transmitGain) return;
+      try { this.transmitGain.disconnect(chain.mixGain); } catch (_) {}
       try { this.transmitGain.disconnect(chain.workletNode); } catch (_) {}
       this.connectedChains.delete(chain);
     },
@@ -650,6 +663,17 @@
       if (shouldPlay) this.play();
     },
     seek(fraction) { if (Number.isFinite(this.audioEl.duration)) this.audioEl.currentTime = Math.max(0, Math.min(1, fraction)) * this.audioEl.duration; },
+    handleCallEnded() {
+      // A song is call-scoped: ending the final call stops monitoring and transmission,
+      // while retaining its selected track and reset-free pause position.
+      if (this.playing) this.audioEl.pause();
+      this.broadcastState();
+    },
+    setMonitoring(on) {
+      this.monitoring = on;
+      const ctx = ensureProcessingContext();
+      if (this.monitorGain && ctx) this.monitorGain.gain.setValueAtTime(on ? 1 : 0, ctx.currentTime);
+    },
     setMonitoring(on) {
       this.monitoring = on;
       const ctx = ensureProcessingContext();
@@ -679,6 +703,8 @@
       if (t && t.kind === "audio" && !t.__omniLordProcessed) {
         AudioInterceptor.processTrack(t).then((processed) => {
           if (processed && processed !== t && sender.replaceTrack) {
+            const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(processed));
+            if (chain) chain.sender = sender;
             sender.replaceTrack(processed).catch(() => {});
           }
         }).catch(() => {});
@@ -689,8 +715,22 @@
   }
 
   const NativePeerConnection = window.RTCPeerConnection;
+  function cleanupPeerConnection(pc) {
+    try {
+      pc.getSenders().forEach((sender) => {
+        const chain = AudioInterceptor.chains.find((entry) => entry.sender === sender);
+        if (chain) AudioInterceptor.cleanupChain(chain);
+      });
+    } catch (_) {}
+  }
   if (NativePeerConnection) {
     window.RTCPeerConnection = class extends NativePeerConnection {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("connectionstatechange", () => {
+          if (this.connectionState === "closed" || this.connectionState === "failed") cleanupPeerConnection(this);
+        });
+      }
       async createOffer(options) {
         const offer = await super.createOffer(options);
         try { offer.sdp = forceStereoOpusSDP(offer.sdp); } catch (_) {}
@@ -716,25 +756,36 @@
         return result;
       }
       addTrack(track, ...streams) {
-        if (track && track.kind === "audio" && !track.__omniLordProcessed) {
-          const sender = super.addTrack(track, ...streams);
-          AudioInterceptor.processTrack(track).then((processed) => {
-            if (processed && processed !== track && sender && typeof sender.replaceTrack === "function") {
-              sender.replaceTrack(processed).catch(() => {});
-            }
-          }).catch(() => {});
-          return sender;
-        }
-        return super.addTrack(track, ...streams);
+        const sender = super.addTrack(track, ...streams);
+        if (!track || track.kind !== "audio") return sender;
+        const bindChain = (processed) => {
+          const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(processed));
+          if (chain) chain.sender = sender;
+        };
+        // A getUserMedia interception already returns our destination track. Bind that
+        // actual sender immediately rather than creating a second, unused mixer.
+        if (track.__omniLordProcessed) { bindChain(track); return sender; }
+        AudioInterceptor.processTrack(track).then((processed) => {
+          if (processed && processed !== track && sender && typeof sender.replaceTrack === "function") {
+            bindChain(processed);
+            sender.replaceTrack(processed).catch(() => {});
+          }
+        }).catch(() => {});
+        return sender;
       }
       addTransceiver(trackOrKind, init) {
         const isAudioKind = typeof trackOrKind === "string" ? trackOrKind === "audio" : (trackOrKind && trackOrKind.kind === "audio");
         const hasUnprocessedTrack = trackOrKind && typeof trackOrKind === "object" && trackOrKind.kind === "audio" && !trackOrKind.__omniLordProcessed;
         if (isAudioKind || hasUnprocessedTrack) {
           const transceiver = super.addTransceiver(trackOrKind, init);
-          if (hasUnprocessedTrack) {
+          if (trackOrKind?.__omniLordProcessed && transceiver?.sender) {
+            const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(trackOrKind));
+            if (chain) chain.sender = transceiver.sender;
+          } else if (hasUnprocessedTrack) {
             AudioInterceptor.processTrack(trackOrKind).then((processed) => {
               if (processed && processed !== trackOrKind && transceiver?.sender?.replaceTrack) {
+                const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(processed));
+                if (chain) chain.sender = transceiver.sender;
                 transceiver.sender.replaceTrack(processed).catch(() => {});
               }
             }).catch(() => {});
@@ -743,6 +794,12 @@
           return transceiver;
         }
         return super.addTransceiver(trackOrKind, init);
+      }
+      close() {
+        // Sites commonly retain the microphone stream after hangup; PC.close is the
+        // definitive call lifecycle signal, so release its mixer and stop monitoring.
+        cleanupPeerConnection(this);
+        return super.close();
       }
       setConfiguration(config) {
         const result = super.setConfiguration(config);
@@ -757,6 +814,10 @@
     window.RTCRtpSender.prototype.replaceTrack = async function (track) {
       if (track?.kind === "audio" && !track.__omniLordProcessed) {
         track = await AudioInterceptor.processTrack(track);
+      }
+      if (track?.kind === "audio" && track.__omniLordProcessed) {
+        const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(track));
+        if (chain) chain.sender = this;
       }
       return nativeReplaceTrack.call(this, track);
     };
