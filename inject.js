@@ -1208,14 +1208,15 @@
             </div>
 
             <div class="oul-player">
-                <div class="oul-lbl">CALL AUDIO PLAYER <span id="lbl-playerTrack">No track</span></div>
+                <div class="oul-lbl">CALL MUSIC LIBRARY <span id="lbl-playerTrack">0 / 30</span></div>
+                <input id="oul-audio-upload" type="file" accept="audio/*" multiple style="width:100%;font-size:10px;margin:4px 0" />
                 <div class="oul-player-controls">
-                    <button id="btn-prev" class="oul-btn">PREV</button>
-                    <button id="btn-play" class="oul-btn">PLAY</button>
-                    <button id="btn-next" class="oul-btn">NEXT</button>
+                    <button id="btn-prev" class="oul-btn">PREV</button><button id="btn-play" class="oul-btn">PLAY</button><button id="btn-stop" class="oul-btn">STOP</button><button id="btn-next" class="oul-btn">NEXT</button>
                 </div>
+                <button id="btn-monitor" class="oul-btn" style="width:100%;margin-top:5px">PLAYBACK ON</button>
                 <input id="oul-seek" type="range" min="0" max="1000" step="1" value="0" style="width:100%;margin-top:6px" />
-                <div class="oul-player-meta"><span id="lbl-playerTime">0:00 / 0:00</span><span>Boosted into calls</span></div>
+                <div class="oul-player-meta"><span id="lbl-playerTime">0:00 / 0:00</span><span id="lbl-playerStatus">Ready for call</span></div>
+                <div id="oul-track-list" style="max-height:120px;overflow:auto;margin-top:6px"></div>
             </div>
         </div>
       `;
@@ -1302,6 +1303,31 @@
       if (btnPrev) btnPrev.addEventListener("click", () => PlayerEngine.previous());
       if (btnNext) btnNext.addEventListener("click", () => PlayerEngine.next());
       if (seekBar) seekBar.addEventListener("change", () => PlayerEngine.seek(Number(seekBar.value) / 1000));
+      const upload = document.getElementById("oul-audio-upload");
+      const list = document.getElementById("oul-track-list");
+      const monitor = document.getElementById("btn-monitor");
+      const refreshTracks = () => {
+        if (!list) return;
+        document.getElementById("lbl-playerTrack").textContent = PlayerEngine.library.length + " / 30";
+        list.innerHTML = "";
+        PlayerEngine.library.forEach((track, index) => {
+          const row = document.createElement("button"); row.className = "oul-btn"; row.style.cssText = "width:100%;margin:2px 0;text-align:left";
+          row.textContent = (index === PlayerEngine.currentIndex ? "▶ " : "  ") + track.name;
+          row.onclick = () => { PlayerEngine.select(track.id); refreshTracks(); };
+          list.appendChild(row);
+        });
+      };
+      if (upload) upload.addEventListener("change", async () => {
+        const slots = Math.max(0, 30 - PlayerEngine.library.length);
+        for (const file of Array.from(upload.files || []).slice(0, slots)) {
+          const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+          PlayerEngine.addTrack({ id: crypto.randomUUID ? crypto.randomUUID() : Date.now() + Math.random(), name: file.name, type: file.type }, data);
+        }
+        upload.value = ""; refreshTracks();
+      });
+      if (monitor) monitor.addEventListener("click", () => { PlayerEngine.setMonitoring(!PlayerEngine.monitoring); monitor.textContent = PlayerEngine.monitoring ? "PLAYBACK ON" : "PLAYBACK OFF"; });
+      const stop = document.getElementById("btn-stop"); if (stop) stop.addEventListener("click", () => PlayerEngine.stop());
+      refreshTracks();
 
       window.addEventListener("message", (event) => {
         if (event.source !== window || event.data?.source !== "Omni-Universal-Lord") return;
