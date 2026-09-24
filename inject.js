@@ -468,6 +468,7 @@
       try { chain.mixGain?.disconnect(); } catch (e) {}
       try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
       if (!this.chains.filter((item) => item !== chain).length) PlayerEngine.handleCallEnded();
+      try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
       this.chains = this.chains.filter((item) => item !== chain);
       window.__OmniLordAnalyser = this.chains.at(-1)?.analyserNode || null;
     },
@@ -574,11 +575,14 @@
       // Mix after the microphone DSP, then feed the MediaStreamDestination track that
       // getUserMedia/replaceTrack supplies to the peer connection.
       try { this.transmitGain.connect(chain.mixGain); this.connectedChains.add(chain); } catch (_) {}
+      if (!this.transmitGain || !chain || !chain.workletNode || this.connectedChains.has(chain)) return;
+      try { this.transmitGain.connect(chain.workletNode); this.connectedChains.add(chain); } catch (_) {}
     },
     connectToAllChains() { AudioInterceptor.chains.forEach((chain) => this.connectToChain(chain)); },
     disconnectFromChain(chain) {
       if (!this.connectedChains.has(chain) || !this.transmitGain) return;
       try { this.transmitGain.disconnect(chain.mixGain); } catch (_) {}
+      try { this.transmitGain.disconnect(chain.workletNode); } catch (_) {}
       this.connectedChains.delete(chain);
     },
 
@@ -670,6 +674,11 @@
       // while retaining its selected track and reset-free pause position.
       if (this.playing) this.audioEl.pause();
       this.broadcastState();
+    },
+    setMonitoring(on) {
+      this.monitoring = on;
+      const ctx = ensureProcessingContext();
+      if (this.monitorGain && ctx) this.monitorGain.gain.setValueAtTime(on ? 1 : 0, ctx.currentTime);
     },
     setMonitoring(on) {
       this.monitoring = on;

@@ -199,6 +199,8 @@
     chrome.storage.local.get({ [trackDataKey]: [] }, function (stored) {
       chrome.storage.local.set({ [trackDataKey]: (stored[trackDataKey] || []).filter(function (track) { return track.id !== id; }) }, function () {});
     });
+  function removeTrack(id) {
+    library = library.filter(function (item) { return item.id !== id; });
     saveMetadata(); renderLibrary();
     sendPlayerMessage({ type: 'omni-player', action: 'remove', id: id }, setPlayerState);
   }
@@ -255,6 +257,9 @@
       });
     })).then(function (items) {
       saveTrackData(items);
+        return { item: item, data: Array.from(new Uint8Array(result[0])), replace: Boolean(existing) };
+      });
+    })).then(function (items) {
       items.forEach(function (entry) {
         const oldIndex = library.findIndex(function (track) { return track.id === entry.item.id; });
         if (oldIndex >= 0) library.splice(oldIndex, 1, entry.item); else library.push(entry.item);
