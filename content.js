@@ -49,7 +49,7 @@
       if (Number.isFinite(session.currentTime) && session.currentTime > 0) postToPage('OMNI_PLAYER_REQUEST', { action: 'seekTime', value: session.currentTime });
       // Start only when music was active in the source page. A user gesture that started
       // the call normally permits this on the call document; play rejection is harmless.
-      if (session.playing) postToPage('OMNI_PLAYER_REQUEST', { action: 'play', id: session.currentId });
+      if (session.playing) postToPage('OMNI_PLAYER_REQUEST', { action: 'restorePlay', id: session.currentId });
     });
   }
 

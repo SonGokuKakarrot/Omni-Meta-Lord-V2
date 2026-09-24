@@ -81,7 +81,9 @@
         "content.js"
       ],
       "run_at": "document_start",
-      "world": "ISOLATED"
+      "world": "ISOLATED",
+      "all_frames": true,
+      "match_about_blank": true
     },
     {
       "matches": [
@@ -115,7 +117,9 @@
         "inject.js"
       ],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ],
   "web_accessible_resources": [

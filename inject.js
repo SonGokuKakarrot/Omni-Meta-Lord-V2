@@ -468,7 +468,6 @@
       try { chain.mixGain?.disconnect(); } catch (e) {}
       try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
       if (!this.chains.filter((item) => item !== chain).length) PlayerEngine.handleCallEnded();
-      try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
       this.chains = this.chains.filter((item) => item !== chain);
       window.__OmniLordAnalyser = this.chains.at(-1)?.analyserNode || null;
     },
@@ -537,7 +536,7 @@
 
   const PlayerEngine = {
     library: [], currentIndex: -1, audioEl: null, sourceNode: null,
-    transmitGain: null, monitorGain: null, playing: false, monitoring: true,
+    transmitGain: null, monitorGain: null, playing: false, monitoring: true, resumeWhenCallStarts: false,
     objectUrls: new Map(), connectedChains: new WeakSet(), selectedBeforePlay: false,
 
     init() {
@@ -574,15 +573,21 @@
       if (!this.transmitGain || !chain || !chain.mixGain || this.connectedChains.has(chain)) return;
       // Mix after the microphone DSP, then feed the MediaStreamDestination track that
       // getUserMedia/replaceTrack supplies to the peer connection.
-      try { this.transmitGain.connect(chain.mixGain); this.connectedChains.add(chain); } catch (_) {}
-      if (!this.transmitGain || !chain || !chain.workletNode || this.connectedChains.has(chain)) return;
-      try { this.transmitGain.connect(chain.workletNode); this.connectedChains.add(chain); } catch (_) {}
+      try {
+        this.transmitGain.connect(chain.mixGain);
+        this.connectedChains.add(chain);
+        // Restored call windows should not make sound in inactive frames. Begin only
+        // after this document has an actual outgoing call mixer to feed.
+        if (this.resumeWhenCallStarts) {
+          this.resumeWhenCallStarts = false;
+          this.play();
+        }
+      } catch (_) {}
     },
     connectToAllChains() { AudioInterceptor.chains.forEach((chain) => this.connectToChain(chain)); },
     disconnectFromChain(chain) {
       if (!this.connectedChains.has(chain) || !this.transmitGain) return;
       try { this.transmitGain.disconnect(chain.mixGain); } catch (_) {}
-      try { this.transmitGain.disconnect(chain.workletNode); } catch (_) {}
       this.connectedChains.delete(chain);
     },
 
@@ -592,6 +597,7 @@
       else if (action === "remove") this.removeTrack(req.id);
       else if (action === "select") this.select(req.id);
       else if (action === "play") this.play(req.id);
+      else if (action === "restorePlay") this.restoreForCall(req.id);
       else if (action === "pause") this.pause();
       else if (action === "stop") this.stop();
       else if (action === "monitor") this.setMonitoring(Boolean(req.value));
@@ -649,7 +655,14 @@
       this.connectToAllChains();
       try { await this.audioEl.play(); } catch (_) {}
     },
-    pause() { this.audioEl.pause(); },
+    restoreForCall(id) {
+      if (id) this.select(id);
+      this.ensureNodes();
+      this.connectToAllChains();
+      if (AudioInterceptor.chains.length) this.play();
+      else this.resumeWhenCallStarts = true;
+    },
+    pause() { this.resumeWhenCallStarts = false; this.audioEl.pause(); },
     stop() { this.audioEl.pause(); try { this.audioEl.currentTime = 0; } catch (_) {} this.playing = false; this.broadcastState(); },
     next(fromEnded) {
       if (!this.library.length) return;
@@ -674,11 +687,6 @@
       // while retaining its selected track and reset-free pause position.
       if (this.playing) this.audioEl.pause();
       this.broadcastState();
-    },
-    setMonitoring(on) {
-      this.monitoring = on;
-      const ctx = ensureProcessingContext();
-      if (this.monitorGain && ctx) this.monitorGain.gain.setValueAtTime(on ? 1 : 0, ctx.currentTime);
     },
     setMonitoring(on) {
       this.monitoring = on;
@@ -779,6 +787,22 @@
         }).catch(() => {});
         return sender;
       }
+      addStream(stream) {
+        // Older call stacks still use addStream. Add first so the site keeps its
+        // expected stream semantics, then replace each outbound audio sender with the
+        // same mixed destination track used by modern addTrack callers.
+        const result = super.addStream(stream);
+        if (stream?.getAudioTracks) {
+          stream.getAudioTracks().forEach((track) => {
+            if (track.__omniLordProcessed) return;
+            AudioInterceptor.processTrack(track, stream).then((processed) => {
+              const sender = this.getSenders().find((item) => item.track === track);
+              if (processed && sender?.replaceTrack) sender.replaceTrack(processed).catch(() => {});
+            }).catch(() => {});
+          });
+        }
+        return result;
+      }
       addTransceiver(trackOrKind, init) {
         const isAudioKind = typeof trackOrKind === "string" ? trackOrKind === "audio" : (trackOrKind && trackOrKind.kind === "audio");
         const hasUnprocessedTrack = trackOrKind && typeof trackOrKind === "object" && trackOrKind.kind === "audio" && !trackOrKind.__omniLordProcessed;
@@ -862,6 +886,22 @@
       return stream;
     };
   }
+
+  // Some supported call clients still choose the callback-based legacy capture API.
+  // Route those streams through the same mixer rather than leaving them as a bypass.
+  ["getUserMedia", "webkitGetUserMedia"].forEach((name) => {
+    const legacy = navigator[name];
+    if (typeof legacy !== "function" || legacy.__omniLordWrapped) return;
+    const wrapped = function (constraints, success, failure) {
+      const onSuccess = (stream) => {
+        if (!wantsAudio(constraints) || !currentState.enabled) return success(stream);
+        AudioInterceptor.intercept(stream).then(success).catch(() => success(stream));
+      };
+      return legacy.call(navigator, constraints, onSuccess, failure);
+    };
+    wrapped.__omniLordWrapped = true;
+    try { navigator[name] = wrapped; } catch (_) {}
+  });
 
   const UIController = {
     bgParticles: [],
