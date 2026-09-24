@@ -146,7 +146,7 @@
       const row = document.createElement('li'); row.className = 'track-item'; row.dataset.id = item.id;
       const number = document.createElement('span'); number.className = 'track-number'; number.textContent = String(index + 1).padStart(2, '0');
       const name = document.createElement('span'); name.className = 'track-name'; name.textContent = item.name;
-      row.append(number, name); row.addEventListener('click', function () { sendToTab({ type: 'omni-player', action: 'play', id: item.id }); }); trackList.appendChild(row);
+      row.append(number, name); row.addEventListener('click', function () { sendPlayerMessage({ type: 'omni-player', action: 'play', id: item.id }, setPlayerState); }); trackList.appendChild(row);
     });
     setPlayerState(playerState);
   }
@@ -157,12 +157,14 @@
     const files = Array.from(audioPicker.files || []).slice(0, maxTracks - library.length);
     if (!files.length) return;
     Promise.all(files.map(function (file) {
-      return file.arrayBuffer().then(function (data) {
+      return file.arrayBuffer().then(function (buf) {
+        const bytes = new Uint8Array(buf);
+        const arr = Array.from(bytes);
         const item = { id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: file.name, type: file.type || 'audio/*', size: file.size };
-        return { item: item, data: data };
+        return { item: item, data: arr };
       });
     })).then(function (items) {
-      items.forEach(function (entry) { library.push(entry.item); sendToTab({ type: 'omni-player', action: 'upload', item: entry.item, data: entry.data }); });
+      items.forEach(function (entry) { library.push(entry.item); sendPlayerMessage({ type: 'omni-player', action: 'upload', item: entry.item, data: entry.data }, setPlayerState); });
       saveMetadata(); renderLibrary(); audioPicker.value = '';
     });
   });
