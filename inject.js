@@ -416,6 +416,10 @@
             return filter;
           });
           const analyserNode = audioCtx.createAnalyser();
+          const mixGain = audioCtx.createGain();
+          // This destination track is the only outgoing track returned to the call.
+          // Both the processed microphone and the player feed this explicit mixer.
+          mixGain.gain.value = 1;
           analyserNode.fftSize = 512;
           source.connect(workletNode);
           let lastNode = workletNode;
@@ -424,7 +428,8 @@
             lastNode = eqNode;
           }
           lastNode.connect(analyserNode);
-          analyserNode.connect(destination);
+          analyserNode.connect(mixGain);
+          mixGain.connect(destination);
 
           destination.stream.getAudioTracks().forEach((track) => {
             track.__omniLordProcessed = true;
@@ -436,7 +441,7 @@
             ...mediaStream.getTracks().filter((track) => track.kind !== "audio")
           ]);
 
-          const chain = { source, workletNode, eqNodes, analyserNode, destination, sourceTracks: audioTracks, sourceIds, outStream };
+          const chain = { source, workletNode, eqNodes, analyserNode, mixGain, destination, sourceTracks: audioTracks, sourceIds, outStream, sender: null };
           this.chains.push(chain);
           window.__OmniLordAnalyser = analyserNode;
 
@@ -460,6 +465,9 @@
       try { chain.workletNode?.disconnect(); } catch (e) {}
       try { chain.eqNodes?.forEach((n) => n.disconnect()); } catch (e) {}
       try { chain.analyserNode?.disconnect(); } catch (e) {}
+      try { chain.mixGain?.disconnect(); } catch (e) {}
+      try { PlayerEngine.disconnectFromChain(chain); } catch (e) {}
+      if (!this.chains.filter((item) => item !== chain).length) PlayerEngine.handleCallEnded();
       this.chains = this.chains.filter((item) => item !== chain);
       window.__OmniLordAnalyser = this.chains.at(-1)?.analyserNode || null;
     },
@@ -527,22 +535,19 @@
   };
 
   const PlayerEngine = {
-    library: [],
-    currentIndex: -1,
-    audioEl: null,
-    sourceNode: null,
-    gainNode: null,
-    playing: false,
-    objectUrls: new Map(),
+    library: [], currentIndex: -1, audioEl: null, sourceNode: null,
+    transmitGain: null, monitorGain: null, playing: false, monitoring: true, resumeWhenCallStarts: false,
+    objectUrls: new Map(), connectedChains: new WeakSet(), selectedBeforePlay: false,
 
     init() {
       this.audioEl = new Audio();
-      this.audioEl.crossOrigin = "anonymous";
+      this.audioEl.preload = "auto";
       this.audioEl.addEventListener("timeupdate", () => this.broadcastState());
       this.audioEl.addEventListener("play", () => { this.playing = true; this.broadcastState(); });
       this.audioEl.addEventListener("pause", () => { this.playing = false; this.broadcastState(); });
-      this.audioEl.addEventListener("ended", () => this.next());
+      this.audioEl.addEventListener("ended", () => { this.stop(); this.next(true); });
       this.audioEl.addEventListener("loadedmetadata", () => this.broadcastState());
+      this.audioEl.addEventListener("error", () => this.broadcastState());
     },
 
     ensureNodes() {
@@ -551,107 +556,150 @@
       if (!this.sourceNode) {
         try {
           this.sourceNode = ctx.createMediaElementSource(this.audioEl);
-          this.gainNode = ctx.createGain();
-          this.gainNode.gain.value = 1.0;
-          this.sourceNode.connect(this.gainNode);
-          this.gainNode.connect(ctx.destination);
-        } catch (e) { return null; }
+          this.transmitGain = ctx.createGain();
+          this.monitorGain = ctx.createGain();
+          // A dedicated monitor branch means disabling Playback never affects call audio.
+          this.transmitGain.gain.value = 1;
+          this.monitorGain.gain.value = this.monitoring ? 1 : 0;
+          this.sourceNode.connect(this.transmitGain);
+          this.sourceNode.connect(this.monitorGain);
+          this.monitorGain.connect(ctx.destination);
+        } catch (_) { return null; }
       }
       return ctx;
     },
 
     connectToChain(chain) {
-      if (!this.gainNode || !chain || !chain.workletNode) return;
-      try { this.gainNode.connect(chain.workletNode); } catch (e) {}
+      if (!this.transmitGain || !chain || !chain.mixGain || this.connectedChains.has(chain)) return;
+      // Mix after the microphone DSP, then feed the MediaStreamDestination track that
+      // getUserMedia/replaceTrack supplies to the peer connection.
+      try {
+        this.transmitGain.connect(chain.mixGain);
+        this.connectedChains.add(chain);
+        // Restored call windows should not make sound in inactive frames. Begin only
+        // after this document has an actual outgoing call mixer to feed.
+        if (this.resumeWhenCallStarts) {
+          this.resumeWhenCallStarts = false;
+          this.play();
+        }
+      } catch (_) {}
     },
-
-    connectToAllChains() {
-      if (!this.gainNode) return;
-      AudioInterceptor.chains.forEach((chain) => this.connectToChain(chain));
+    connectToAllChains() { AudioInterceptor.chains.forEach((chain) => this.connectToChain(chain)); },
+    disconnectFromChain(chain) {
+      if (!this.connectedChains.has(chain) || !this.transmitGain) return;
+      try { this.transmitGain.disconnect(chain.mixGain); } catch (_) {}
+      this.connectedChains.delete(chain);
     },
 
     handleRequest(req) {
       const action = req.action;
-      if (action === "upload") { this.addTrack(req.item, req.data); }
-      else if (action === "play") { this.play(req.id); }
-      else if (action === "pause") { this.pause(); }
-      else if (action === "next") { this.next(); }
-      else if (action === "previous") { this.previous(); }
-      else if (action === "seek") { this.seek(req.value); }
+      if (action === "upload") this.addTrack(req.item, req.data);
+      else if (action === "remove") this.removeTrack(req.id);
+      else if (action === "select") this.select(req.id);
+      else if (action === "play") this.play(req.id);
+      else if (action === "restorePlay") this.restoreForCall(req.id);
+      else if (action === "pause") this.pause();
+      else if (action === "stop") this.stop();
+      else if (action === "monitor") this.setMonitoring(Boolean(req.value));
+      else if (action === "next") this.next();
+      else if (action === "previous") this.previous();
+      else if (action === "seek") this.seek(req.value);
+      else if (action === "seekTime") this.seekTime(req.value);
       this.broadcastState();
     },
 
     addTrack(item, data) {
       if (!item || !item.id || !data) return;
-      const bytes = (data instanceof ArrayBuffer) ? data : new Uint8Array(data).buffer;
-      const blob = new Blob([bytes], { type: item.type || "audio/*" });
-      const url = URL.createObjectURL(blob);
+      const oldUrl = this.objectUrls.get(item.id);
+      if (oldUrl) URL.revokeObjectURL(oldUrl);
+      const bytes = data instanceof ArrayBuffer ? data : new Uint8Array(data).buffer;
+      const url = URL.createObjectURL(new Blob([bytes], { type: item.type || "audio/*" }));
       this.objectUrls.set(item.id, url);
-      this.library.push({ id: item.id, name: item.name, url: url });
-      if (this.library.length === 1) { this.currentIndex = 0; this.loadCurrent(); }
-      this.broadcastState();
+      const track = { id: item.id, name: item.name || "Untitled track", artwork: item.artwork || "", url };
+      const index = this.library.findIndex((entry) => entry.id === item.id);
+      const wasCurrent = index === this.currentIndex;
+      if (index >= 0) this.library.splice(index, 1, track); else this.library.push(track);
+      if (this.currentIndex < 0) { this.currentIndex = 0; this.loadCurrent(); }
+      else if (wasCurrent) { const resumeAt = this.audioEl.currentTime || 0; this.loadCurrent(resumeAt); }
     },
-
-    loadCurrent() {
-      if (this.currentIndex < 0 || this.currentIndex >= this.library.length) return;
-      const track = this.library[this.currentIndex];
-      if (!track) return;
-      this.audioEl.src = track.url;
-      this.audioEl.load();
+    removeTrack(id) {
+      const index = this.library.findIndex((track) => track.id === id);
+      if (index < 0) return;
+      const wasCurrent = index === this.currentIndex;
+      const url = this.objectUrls.get(id); if (url) URL.revokeObjectURL(url);
+      this.objectUrls.delete(id); this.library.splice(index, 1);
+      if (!this.library.length) { this.currentIndex = -1; this.stop(); this.audioEl.removeAttribute("src"); this.audioEl.load(); return; }
+      if (wasCurrent) { this.currentIndex = Math.min(index, this.library.length - 1); this.loadCurrent(); }
+      else if (index < this.currentIndex) this.currentIndex -= 1;
     },
-
+    select(id) {
+      const index = this.library.findIndex((track) => track.id === id);
+      if (index < 0 || index === this.currentIndex) return;
+      const shouldPlay = this.playing;
+      this.audioEl.pause(); this.currentIndex = index; this.loadCurrent();
+      if (shouldPlay) this.play();
+    },
+    loadCurrent(resumeAt) {
+      const track = this.library[this.currentIndex]; if (!track) return;
+      this.audioEl.src = track.url; this.audioEl.load();
+      if (Number.isFinite(resumeAt) && resumeAt > 0) this.audioEl.addEventListener("loadedmetadata", () => { this.audioEl.currentTime = Math.min(resumeAt, this.audioEl.duration || resumeAt); }, { once: true });
+    },
     async play(id) {
-      const ctx = ensureProcessingContext();
-      if (ctx && ctx.state === "suspended") await ctx.resume();
-      this.ensureNodes();
+      const ctx = this.ensureNodes(); if (ctx?.state === "suspended") await ctx.resume();
       if (id) {
-        const idx = this.library.findIndex((t) => t.id === id);
-        if (idx >= 0) { this.currentIndex = idx; this.loadCurrent(); }
+        const idx = this.library.findIndex((track) => track.id === id);
+        if (idx >= 0 && idx !== this.currentIndex) this.select(id);
       }
       if (this.currentIndex < 0 && this.library.length) { this.currentIndex = 0; this.loadCurrent(); }
       if (this.currentIndex < 0) return;
       this.connectToAllChains();
-      try { await this.audioEl.play(); } catch (e) {}
-      this.broadcastState();
+      try { await this.audioEl.play(); } catch (_) {}
     },
-
-    pause() { this.audioEl.pause(); this.broadcastState(); },
-
-    next() {
+    restoreForCall(id) {
+      if (id) this.select(id);
+      this.ensureNodes();
+      this.connectToAllChains();
+      if (AudioInterceptor.chains.length) this.play();
+      else this.resumeWhenCallStarts = true;
+    },
+    pause() { this.resumeWhenCallStarts = false; this.audioEl.pause(); },
+    stop() { this.audioEl.pause(); try { this.audioEl.currentTime = 0; } catch (_) {} this.playing = false; this.broadcastState(); },
+    next(fromEnded) {
       if (!this.library.length) return;
-      this.currentIndex = (this.currentIndex + 1) % this.library.length;
-      this.loadCurrent();
-      if (this.playing) this.play();
-      else this.broadcastState();
+      const shouldPlay = fromEnded || this.playing;
+      this.audioEl.pause(); this.currentIndex = (this.currentIndex + 1) % this.library.length; this.loadCurrent();
+      if (shouldPlay) this.play();
     },
-
     previous() {
       if (!this.library.length) return;
-      this.currentIndex = (this.currentIndex - 1 + this.library.length) % this.library.length;
-      this.loadCurrent();
-      if (this.playing) this.play();
-      else this.broadcastState();
+      const shouldPlay = this.playing;
+      this.audioEl.pause(); this.currentIndex = (this.currentIndex - 1 + this.library.length) % this.library.length; this.loadCurrent();
+      if (shouldPlay) this.play();
     },
-
-    seek(fraction) {
-      if (!this.audioEl.duration) return;
-      this.audioEl.currentTime = Math.max(0, Math.min(1, fraction)) * this.audioEl.duration;
+    seek(fraction) { if (Number.isFinite(this.audioEl.duration)) this.audioEl.currentTime = Math.max(0, Math.min(1, fraction)) * this.audioEl.duration; },
+    seekTime(seconds) {
+      const apply = () => { this.audioEl.currentTime = Math.max(0, Math.min(Number(seconds) || 0, this.audioEl.duration || Number(seconds) || 0)); };
+      if (Number.isFinite(this.audioEl.duration)) apply();
+      else this.audioEl.addEventListener("loadedmetadata", apply, { once: true });
+    },
+    handleCallEnded() {
+      // A song is call-scoped: ending the final call stops monitoring and transmission,
+      // while retaining its selected track and reset-free pause position.
+      if (this.playing) this.audioEl.pause();
       this.broadcastState();
     },
-
+    setMonitoring(on) {
+      this.monitoring = on;
+      const ctx = ensureProcessingContext();
+      if (this.monitorGain && ctx) this.monitorGain.gain.setValueAtTime(on ? 1 : 0, ctx.currentTime);
+    },
     broadcastState() {
       const track = this.library[this.currentIndex];
-      window.postMessage({
-        source: "Omni-Universal-Lord",
-        type: "OMNI_PLAYER_STATE",
-        state: {
-          currentId: track ? track.id : null,
-          playing: this.playing,
-          currentTime: this.audioEl.currentTime || 0,
-          duration: this.audioEl.duration || 0,
-          trackCount: this.library.length
-        }
-      }, "*");
+      window.postMessage({ source: "Omni-Universal-Lord", type: "OMNI_PLAYER_STATE", state: {
+        currentId: track ? track.id : null, playing: this.playing, currentTime: this.audioEl.currentTime || 0,
+        duration: this.audioEl.duration || 0, trackCount: this.library.length, monitoring: this.monitoring,
+        transmitting: Boolean(AudioInterceptor.chains.length && this.transmitGain)
+      } }, "*");
     }
   };
 
@@ -669,6 +717,8 @@
       if (t && t.kind === "audio" && !t.__omniLordProcessed) {
         AudioInterceptor.processTrack(t).then((processed) => {
           if (processed && processed !== t && sender.replaceTrack) {
+            const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(processed));
+            if (chain) chain.sender = sender;
             sender.replaceTrack(processed).catch(() => {});
           }
         }).catch(() => {});
@@ -679,8 +729,22 @@
   }
 
   const NativePeerConnection = window.RTCPeerConnection;
+  function cleanupPeerConnection(pc) {
+    try {
+      pc.getSenders().forEach((sender) => {
+        const chain = AudioInterceptor.chains.find((entry) => entry.sender === sender);
+        if (chain) AudioInterceptor.cleanupChain(chain);
+      });
+    } catch (_) {}
+  }
   if (NativePeerConnection) {
     window.RTCPeerConnection = class extends NativePeerConnection {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("connectionstatechange", () => {
+          if (this.connectionState === "closed" || this.connectionState === "failed") cleanupPeerConnection(this);
+        });
+      }
       async createOffer(options) {
         const offer = await super.createOffer(options);
         try { offer.sdp = forceStereoOpusSDP(offer.sdp); } catch (_) {}
@@ -706,25 +770,52 @@
         return result;
       }
       addTrack(track, ...streams) {
-        if (track && track.kind === "audio" && !track.__omniLordProcessed) {
-          const sender = super.addTrack(track, ...streams);
-          AudioInterceptor.processTrack(track).then((processed) => {
-            if (processed && processed !== track && sender && typeof sender.replaceTrack === "function") {
-              sender.replaceTrack(processed).catch(() => {});
-            }
-          }).catch(() => {});
-          return sender;
+        const sender = super.addTrack(track, ...streams);
+        if (!track || track.kind !== "audio") return sender;
+        const bindChain = (processed) => {
+          const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(processed));
+          if (chain) chain.sender = sender;
+        };
+        // A getUserMedia interception already returns our destination track. Bind that
+        // actual sender immediately rather than creating a second, unused mixer.
+        if (track.__omniLordProcessed) { bindChain(track); return sender; }
+        AudioInterceptor.processTrack(track).then((processed) => {
+          if (processed && processed !== track && sender && typeof sender.replaceTrack === "function") {
+            bindChain(processed);
+            sender.replaceTrack(processed).catch(() => {});
+          }
+        }).catch(() => {});
+        return sender;
+      }
+      addStream(stream) {
+        // Older call stacks still use addStream. Add first so the site keeps its
+        // expected stream semantics, then replace each outbound audio sender with the
+        // same mixed destination track used by modern addTrack callers.
+        const result = super.addStream(stream);
+        if (stream?.getAudioTracks) {
+          stream.getAudioTracks().forEach((track) => {
+            if (track.__omniLordProcessed) return;
+            AudioInterceptor.processTrack(track, stream).then((processed) => {
+              const sender = this.getSenders().find((item) => item.track === track);
+              if (processed && sender?.replaceTrack) sender.replaceTrack(processed).catch(() => {});
+            }).catch(() => {});
+          });
         }
-        return super.addTrack(track, ...streams);
+        return result;
       }
       addTransceiver(trackOrKind, init) {
         const isAudioKind = typeof trackOrKind === "string" ? trackOrKind === "audio" : (trackOrKind && trackOrKind.kind === "audio");
         const hasUnprocessedTrack = trackOrKind && typeof trackOrKind === "object" && trackOrKind.kind === "audio" && !trackOrKind.__omniLordProcessed;
         if (isAudioKind || hasUnprocessedTrack) {
           const transceiver = super.addTransceiver(trackOrKind, init);
-          if (hasUnprocessedTrack) {
+          if (trackOrKind?.__omniLordProcessed && transceiver?.sender) {
+            const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(trackOrKind));
+            if (chain) chain.sender = transceiver.sender;
+          } else if (hasUnprocessedTrack) {
             AudioInterceptor.processTrack(trackOrKind).then((processed) => {
               if (processed && processed !== trackOrKind && transceiver?.sender?.replaceTrack) {
+                const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(processed));
+                if (chain) chain.sender = transceiver.sender;
                 transceiver.sender.replaceTrack(processed).catch(() => {});
               }
             }).catch(() => {});
@@ -733,6 +824,12 @@
           return transceiver;
         }
         return super.addTransceiver(trackOrKind, init);
+      }
+      close() {
+        // Sites commonly retain the microphone stream after hangup; PC.close is the
+        // definitive call lifecycle signal, so release its mixer and stop monitoring.
+        cleanupPeerConnection(this);
+        return super.close();
       }
       setConfiguration(config) {
         const result = super.setConfiguration(config);
@@ -747,6 +844,10 @@
     window.RTCRtpSender.prototype.replaceTrack = async function (track) {
       if (track?.kind === "audio" && !track.__omniLordProcessed) {
         track = await AudioInterceptor.processTrack(track);
+      }
+      if (track?.kind === "audio" && track.__omniLordProcessed) {
+        const chain = AudioInterceptor.chains.find((entry) => entry.outStream?.getAudioTracks().includes(track));
+        if (chain) chain.sender = this;
       }
       return nativeReplaceTrack.call(this, track);
     };
@@ -785,6 +886,22 @@
       return stream;
     };
   }
+
+  // Some supported call clients still choose the callback-based legacy capture API.
+  // Route those streams through the same mixer rather than leaving them as a bypass.
+  ["getUserMedia", "webkitGetUserMedia"].forEach((name) => {
+    const legacy = navigator[name];
+    if (typeof legacy !== "function" || legacy.__omniLordWrapped) return;
+    const wrapped = function (constraints, success, failure) {
+      const onSuccess = (stream) => {
+        if (!wantsAudio(constraints) || !currentState.enabled) return success(stream);
+        AudioInterceptor.intercept(stream).then(success).catch(() => success(stream));
+      };
+      return legacy.call(navigator, constraints, onSuccess, failure);
+    };
+    wrapped.__omniLordWrapped = true;
+    try { navigator[name] = wrapped; } catch (_) {}
+  });
 
   const UIController = {
     bgParticles: [],

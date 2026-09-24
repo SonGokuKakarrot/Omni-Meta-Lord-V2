@@ -149,3 +149,21 @@ body {
 }
 .info-box p { font-size: 11px; line-height: 1.5; color: #7B8BA0; }
 .info-box strong { color: #A0B4C8; }
+
+.now-playing { display: flex; gap: 9px; align-items: center; border: 1px solid #1b3042; border-radius: 9px; padding: 8px; margin-bottom: 9px; background: rgba(0, 0, 0, .18); }
+.now-playing-art, .track-art { object-fit: cover; background: linear-gradient(135deg, #003c8f, #111c29); }
+.now-playing-art { width: 46px; height: 46px; border-radius: 7px; flex: none; }
+.now-playing-details { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.now-playing-details strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e8eef2; font-size: 11px; }
+.now-playing-details span { color: #8edff0; font-size: 9px; }
+.playback-toggle { margin: 0 0 9px; padding: 7px 0; border-top: 1px solid #1a2a3c; border-bottom: 1px solid #1a2a3c; }
+.playback-toggle small { display: block; color: #71879b; font-size: 9px; margin-top: 2px; font-weight: 500; }
+.track-item { gap: 7px; border: 1px solid transparent; }
+.track-item.selected { border-color: #28647c; background: rgba(0, 229, 255, .06); }
+.track-item.playing { border-color: #00e5ff; background: rgba(0,229,255,.13); }
+.track-art { width: 26px; height: 26px; border-radius: 5px; flex: none; }
+.track-name-wrap { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.track-name { font-weight: 700; }
+.track-state { color: #7b8ba0; font-size: 8px; margin-top: 2px; }
+.track-remove { appearance: none; border: 0; background: transparent; color: #7b8ba0; cursor: pointer; font-size: 13px; padding: 3px; }
+.track-remove:hover { color: #ff6688; }
