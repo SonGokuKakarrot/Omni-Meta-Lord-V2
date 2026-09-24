@@ -6,6 +6,7 @@
   const themeAsset = 'assets/363bc7ce3c45ce75bd795bd0ab88d936.gif';
   const maxTracks = 30;
   const metadataKey = 'omni-player-library';
+  const trackDataKey = 'omni-player-track-data';
   const DEFAULTS = {
     enabled: true,
     clearGain: 240,
@@ -178,6 +179,26 @@
 
   function saveMetadata() { chrome.storage.local.set({ [metadataKey]: library.slice(0, maxTracks) }, function () {}); }
 
+  function bytesToBase64(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    return btoa(binary);
+  }
+
+  function saveTrackData(entries) {
+    chrome.storage.local.get({ [trackDataKey]: [] }, function (stored) {
+      const existing = Array.isArray(stored[trackDataKey]) ? stored[trackDataKey] : [];
+      const next = existing.filter(function (saved) { return !entries.some(function (entry) { return entry.item.id === saved.id; }); });
+      entries.forEach(function (entry) { next.push({ id: entry.item.id, item: entry.item, data: entry.base64 }); });
+      chrome.storage.local.set({ [trackDataKey]: next.slice(0, maxTracks) }, function () {});
+    });
+  }
+
+  function removeTrack(id) {
+    library = library.filter(function (item) { return item.id !== id; });
+    chrome.storage.local.get({ [trackDataKey]: [] }, function (stored) {
+      chrome.storage.local.set({ [trackDataKey]: (stored[trackDataKey] || []).filter(function (track) { return track.id !== id; }) }, function () {});
+    });
   function removeTrack(id) {
     library = library.filter(function (item) { return item.id !== id; });
     saveMetadata(); renderLibrary();
@@ -231,6 +252,11 @@
       return file.arrayBuffer().then(function (buffer) { const result = [buffer, readArtwork(buffer)];
         const existing = library.find(function (track) { return track.name === file.name; });
         const item = { id: existing ? existing.id : (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), name: file.name, type: file.type || 'audio/*', size: file.size, artwork: result[1] };
+        const bytes = new Uint8Array(result[0]);
+        return { item: item, data: Array.from(bytes), base64: bytesToBase64(bytes), replace: Boolean(existing) };
+      });
+    })).then(function (items) {
+      saveTrackData(items);
         return { item: item, data: Array.from(new Uint8Array(result[0])), replace: Boolean(existing) };
       });
     })).then(function (items) {

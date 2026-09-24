@@ -598,6 +598,7 @@
       else if (action === "next") this.next();
       else if (action === "previous") this.previous();
       else if (action === "seek") this.seek(req.value);
+      else if (action === "seekTime") this.seekTime(req.value);
       this.broadcastState();
     },
 
@@ -663,6 +664,11 @@
       if (shouldPlay) this.play();
     },
     seek(fraction) { if (Number.isFinite(this.audioEl.duration)) this.audioEl.currentTime = Math.max(0, Math.min(1, fraction)) * this.audioEl.duration; },
+    seekTime(seconds) {
+      const apply = () => { this.audioEl.currentTime = Math.max(0, Math.min(Number(seconds) || 0, this.audioEl.duration || Number(seconds) || 0)); };
+      if (Number.isFinite(this.audioEl.duration)) apply();
+      else this.audioEl.addEventListener("loadedmetadata", apply, { once: true });
+    },
     handleCallEnded() {
       // A song is call-scoped: ending the final call stops monitoring and transmission,
       // while retaining its selected track and reset-free pause position.
