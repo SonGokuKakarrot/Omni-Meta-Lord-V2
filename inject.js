@@ -452,8 +452,36 @@
           this.pushParamsFast();
           return outStream;
         } catch (err) {
-          if (window.__OmniLordPanelReady) window.__OmniLordPanelReady.setStatus("FALLBACK MIC");
-          return mediaStream;
+          // The previous fallback returned the raw microphone stream. That bypassed the
+          // destination track completely, so music could only be heard locally whenever
+          // an AudioWorklet was unavailable. Keep the real call path mixed even without
+          // optional voice DSP (the same essential topology as the reference mixer).
+          try {
+            const fallbackSource = audioCtx.createMediaStreamSource(mediaStream);
+            const fallbackMix = audioCtx.createGain();
+            const fallbackDestination = audioCtx.createMediaStreamDestination();
+            fallbackMix.gain.value = 1;
+            fallbackSource.connect(fallbackMix);
+            fallbackMix.connect(fallbackDestination);
+            fallbackDestination.stream.getAudioTracks().forEach((track) => {
+              track.__omniLordProcessed = true;
+              track.__omniLordSourceTrackIds = sourceIds;
+            });
+            const fallbackStream = new MediaStream([
+              ...fallbackDestination.stream.getAudioTracks(),
+              ...mediaStream.getTracks().filter((track) => track.kind !== "audio")
+            ]);
+            const fallbackChain = { source: fallbackSource, workletNode: null, eqNodes: [], analyserNode: null, mixGain: fallbackMix, destination: fallbackDestination, sourceTracks: audioTracks, sourceIds, outStream: fallbackStream, sender: null };
+            this.chains.push(fallbackChain);
+            PlayerEngine.connectToChain(fallbackChain);
+            const cleanup = () => this.cleanupChain(fallbackChain);
+            audioTracks.forEach((track) => track.addEventListener?.("ended", cleanup, { once: true }));
+            if (window.__OmniLordPanelReady) window.__OmniLordPanelReady.setStatus("CALL MIXER ACTIVE");
+            return fallbackStream;
+          } catch (_) {
+            if (window.__OmniLordPanelReady) window.__OmniLordPanelReady.setStatus("FALLBACK MIC");
+            return mediaStream;
+          }
         }
       } finally {
         this.interceptInFlight -= 1;
@@ -506,6 +534,7 @@
       }
 
       for (const chain of this.chains) {
+        if (!chain.workletNode) continue;
         const params = chain.workletNode.parameters;
         params.get("clearGain").setValueAtTime(cGain, now);
         params.get("masterGain").setValueAtTime(mGain, now);
