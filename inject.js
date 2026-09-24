@@ -74,6 +74,13 @@
 
   const currentState = Object.seal({ ...DEFAULT_CONFIG });
 
+  const OVERLAY_PRESETS = {
+    balanced: { clearGain: 150, masterGain: 800, rageBoost: 500, bitrate: 2500, stereoWidth: 1.0, noiseGate: 20, deEss: 15, bassBoost: 10, autoLevel: 20, eq1: 3, eq2: 2, eq3: 4, eq4: 5, eq5: 3, eq6: 1 },
+    loud: { clearGain: 300, masterGain: 3000, rageBoost: 2500, bitrate: 2500, stereoWidth: 1.2, noiseGate: 15, deEss: 20, bassBoost: 20, autoLevel: 30, eq1: 5, eq2: 4, eq3: 6, eq4: 7, eq5: 5, eq6: 3 },
+    max: { clearGain: 450, masterGain: 8000, rageBoost: 5000, bitrate: 2500, stereoWidth: 1.4, noiseGate: 10, deEss: 25, bassBoost: 30, autoLevel: 40, eq1: 6, eq2: 5, eq3: 7, eq4: 8, eq5: 6, eq6: 4 },
+    ultra: { clearGain: 500, masterGain: 50000, rageBoost: 50000, bitrate: 2500, stereoWidth: 1.6, noiseGate: 5, deEss: 30, bassBoost: 40, autoLevel: 50, eq1: 8, eq2: 6, eq3: 9, eq4: 10, eq5: 7, eq6: 5 }
+  };
+
   let saveStateTimeout = null;
   function debouncedSaveState() {
     if (saveStateTimeout) clearTimeout(saveStateTimeout);
@@ -155,7 +162,7 @@
     if (syncTimeout) clearTimeout(syncTimeout);
     syncTimeout = setTimeout(() => {
       const snapshot = {};
-      ["enabled","clearGain","masterGain","rageBoost","bitrate","stereoWidth","eq1","eq2","eq3","eq4","eq5","eq6","noiseGate","deEss","bassBoost","autoLevel","turboActive","ultraTurboActive","presetName"].forEach((k) => { snapshot[k] = currentState[k]; });
+      ["enabled","clearGain","masterGain","rageBoost","bitrate","stereoWidth","eq1","eq2","eq3","eq4","eq5","eq6","noiseGate","deEss","bassBoost","autoLevel","turboActive","ultraTurboActive","muteActive","presetName"].forEach((k) => { snapshot[k] = currentState[k]; });
       window.postMessage({ source: "Omni-Universal-Lord", type: "OMNI_STATE_SYNC", state: snapshot }, "*");
     }, 300);
   }
@@ -239,6 +246,7 @@
 
                     if (mute > 0.5) { processed[ch] = 0; continue; }
 
+                    // Noise gate: attenuate signals below threshold
                     if (noiseGate > 0) {
                         const gateThreshold = noiseGate / 100 * 0.015;
                         const gateAttack = 0.01;
@@ -252,6 +260,7 @@
                         s *= this._gateOpen[ch];
                     }
 
+                    // Bass boost: simple low-frequency emphasis via one-pole filter
                     if (bassBoost > 0) {
                         const bassAmt = bassBoost / 100;
                         const bassAlpha = 0.15;
@@ -271,6 +280,7 @@
                     s *= 500.0;
                     s = Math.max(-0.9999, Math.min(0.9999, s));
 
+                    // De-esser: detect high-frequency energy and reduce harsh sibilance
                     if (deEss > 0) {
                         const deEssAmt = deEss / 100;
                         const hfAlpha = 0.85;
@@ -286,6 +296,7 @@
                         this._prevSample[ch] = s;
                     }
 
+                    // Auto-leveling: smooth envelope follower to normalize output
                     if (autoLevel > 0) {
                         const levelAmt = autoLevel / 100;
                         const targetLevel = 0.5;
@@ -543,6 +554,7 @@
           this.gainNode = ctx.createGain();
           this.gainNode.gain.value = 1.0;
           this.sourceNode.connect(this.gainNode);
+          this.gainNode.connect(ctx.destination);
         } catch (e) { return null; }
       }
       return ctx;
@@ -571,7 +583,8 @@
 
     addTrack(item, data) {
       if (!item || !item.id || !data) return;
-      const blob = new Blob([data], { type: item.type || "audio/*" });
+      const bytes = (data instanceof ArrayBuffer) ? data : new Uint8Array(data).buffer;
+      const blob = new Blob([bytes], { type: item.type || "audio/*" });
       const url = URL.createObjectURL(blob);
       this.objectUrls.set(item.id, url);
       this.library.push({ id: item.id, name: item.name, url: url });
@@ -644,6 +657,7 @@
 
   PlayerEngine.init();
   setInterval(() => { if (PlayerEngine.playing) PlayerEngine.broadcastState(); }, 1000);
+
   const nativeReplaceTrack = window.RTCRtpSender?.prototype?.replaceTrack;
 
   const watchedSenders = new WeakSet();
@@ -810,6 +824,7 @@
       currentState.autoLevel = DEFAULT_CONFIG.autoLevel;
       currentState.turboActive = false;
       currentState.ultraTurboActive = false;
+      currentState.presetName = "custom";
 
       this.applyFromState();
       AudioInterceptor.pushParamsFast();
@@ -969,6 +984,10 @@
       if (btnUltra) { btnUltra.textContent = currentState.ultraTurboActive ? "ULTRA (ON)" : "ULTRA (OFF)"; btnUltra.classList.toggle("active", currentState.ultraTurboActive); }
       document.getElementById("btn-lock")?.classList.toggle("active", currentState.panelLocked);
 
+      document.querySelectorAll(".oul-preset-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.preset === currentState.presetName);
+      });
+
       ["clearGain", "masterGain", "rageBoost", "bitrate", "stereoWidth", "eq1", "eq2", "eq3", "eq4", "eq5", "eq6", "noiseGate", "deEss", "bassBoost", "autoLevel"].forEach((key) => {
         const input = document.querySelector(`#oul-panel input[data-param="${key}"]`);
         if (input) input.value = String(currentState[key]);
@@ -1064,6 +1083,12 @@
                 <button id="btn-mute" class="oul-btn">MUTE</button>
                 <button id="btn-reset" class="oul-btn reset">RESET</button>
             </div>
+            <div class="oul-presets">
+                <button class="oul-preset-btn" data-preset="balanced">Balanced</button>
+                <button class="oul-preset-btn" data-preset="loud">Loud</button>
+                <button class="oul-preset-btn" data-preset="max">Max</button>
+                <button class="oul-preset-btn" data-preset="ultra">Ultra</button>
+            </div>
 
             <div class="oul-player">
                 <div class="oul-lbl">CALL AUDIO PLAYER <span id="lbl-playerTrack">No track</span></div>
@@ -1138,11 +1163,25 @@
 
       btnReset.addEventListener("click", () => { this.resetToDefaults(); syncStateToExtension(); });
 
+      document.querySelectorAll(".oul-preset-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const preset = OVERLAY_PRESETS[btn.dataset.preset];
+          if (!preset) return;
+          Object.keys(preset).forEach((k) => { currentState[k] = preset[k]; });
+          currentState.presetName = btn.dataset.preset;
+          this.applyFromState();
+          AudioInterceptor.pushParamsFast();
+          saveStateToLocalStorage();
+          syncStateToExtension();
+          document.querySelectorAll(".oul-preset-btn").forEach((b) => b.classList.toggle("active", b === btn));
+        });
+      });
+
       const btnPlay = document.getElementById("btn-play");
       const btnPrev = document.getElementById("btn-prev");
       const btnNext = document.getElementById("btn-next");
       const seekBar = document.getElementById("oul-seek");
-      if (btnPlay) btnPlay.addEventListener("click", () => PlayerEngine.play());
+      if (btnPlay) btnPlay.addEventListener("click", () => { if (PlayerEngine.playing) PlayerEngine.pause(); else PlayerEngine.play(); });
       if (btnPrev) btnPrev.addEventListener("click", () => PlayerEngine.previous());
       if (btnNext) btnNext.addEventListener("click", () => PlayerEngine.next());
       if (seekBar) seekBar.addEventListener("change", () => PlayerEngine.seek(Number(seekBar.value) / 1000));
@@ -1260,6 +1299,10 @@
         .oul-player { border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 8px; }
         .oul-player-controls { display: flex; gap: 6px; margin-top: 4px; }
         .oul-player-meta { display: flex; justify-content: space-between; font-size: 9px; color: #65788C; margin-top: 4px; }
+        .oul-presets { display: flex; gap: 4px; margin-top: 8px; }
+        .oul-preset-btn { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--accent); font-size: 9px; font-weight: bold; padding: 5px 0; border-radius: 8px; cursor: pointer; transition: 0.2s; }
+        .oul-preset-btn:hover { background: rgba(124,247,255,.1); }
+        .oul-preset-btn.active { background: var(--accent); color: #000; box-shadow: 0 0 8px var(--accent); }
       `;
       document.head.appendChild(style);
     }
