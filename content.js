@@ -6,6 +6,10 @@
   'use strict';
 
   const themeAsset = 'assets/363bc7ce3c45ce75bd795bd0ab88d936.gif';
+  const trackDataKey = 'omni-player-track-data';
+  const playerSessionKey = 'omni-player-session';
+  let restoredPlayer = false;
+  let playerSaveTimer = null;
 
   function postToPage(type, payload) {
     window.postMessage({ source: "Omni-Universal-Lord", type, ...payload }, "*");
@@ -22,10 +26,48 @@
     } catch (e) {}
   }
 
+  function base64ToBytes(value) {
+    const binary = atob(value || '');
+    const bytes = new Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  function restorePlayerLibrary() {
+    if (restoredPlayer) return;
+    restoredPlayer = true;
+    chrome.storage.local.get({ [trackDataKey]: [], [playerSessionKey]: null }, function (stored) {
+      const tracks = Array.isArray(stored[trackDataKey]) ? stored[trackDataKey] : [];
+      tracks.forEach(function (entry) {
+        if (!entry || !entry.item || !entry.data) return;
+        try { postToPage('OMNI_PLAYER_REQUEST', { action: 'upload', item: entry.item, data: base64ToBytes(entry.data) }); } catch (_) {}
+      });
+      const session = stored[playerSessionKey];
+      if (!session || !session.currentId) return;
+      postToPage('OMNI_PLAYER_REQUEST', { action: 'select', id: session.currentId });
+      postToPage('OMNI_PLAYER_REQUEST', { action: 'monitor', value: session.monitoring !== false });
+      if (Number.isFinite(session.currentTime) && session.currentTime > 0) postToPage('OMNI_PLAYER_REQUEST', { action: 'seekTime', value: session.currentTime });
+      // Start only when music was active in the source page. A user gesture that started
+      // the call normally permits this on the call document; play rejection is harmless.
+      if (session.playing) postToPage('OMNI_PLAYER_REQUEST', { action: 'restorePlay', id: session.currentId });
+    });
+  }
+
   sendTheme();
   window.addEventListener("message", function (event) {
     if (event.source === window && event.data?.source === "Omni-Universal-Lord" && event.data.type === "OMNI_INJECTOR_READY") {
       sendTheme();
+      restorePlayerLibrary();
+    }
+    if (event.source === window && event.data?.source === "Omni-Universal-Lord" && event.data.type === "OMNI_PLAYER_STATE") {
+      clearTimeout(playerSaveTimer);
+      playerSaveTimer = setTimeout(function () {
+        const state = event.data.state || {};
+        chrome.storage.local.set({ [playerSessionKey]: {
+          currentId: state.currentId || null, currentTime: Number(state.currentTime) || 0,
+          playing: Boolean(state.playing), monitoring: state.monitoring !== false
+        } }, function () {});
+      }, 250);
     }
     // Sync page state back to chrome.storage.sync so the popup stays in sync
     if (event.source === window && event.data?.source === "Omni-Universal-Lord" && event.data.type === "OMNI_STATE_SYNC") {
