@@ -53,6 +53,7 @@
   const playerTitle = $('playerTitle'), trackCount = $('trackCount');
   const playPause = $('playPause'), prevTrack = $('prevTrack'), nextTrack = $('nextTrack');
   const playerSeek = $('playerSeek'), playerTime = $('playerTime');
+  const musicGainSlider = $('musicGainSlider'), musicGainValue = $('musicGainValue');
   const monitorToggle = $('monitorToggle'), monitorHint = $('monitorHint'), stopTrack = $('stopTrack');
   const nowPlayingArtwork = $('nowPlayingArtwork'), nowPlayingName = $('nowPlayingName');
   const playerStatus = $('playerStatus'), transmitStatus = $('transmitStatus');
@@ -139,6 +140,7 @@
     playerSeek.value = playerState.duration ? Math.round((playerState.currentTime / playerState.duration) * 1000) : 0;
     playerTime.textContent = formatTime(playerState.currentTime) + ' / ' + formatTime(playerState.duration);
     monitorToggle.checked = playerState.monitoring !== false;
+    musicGainSlider.value = playerState.musicGain || 100; musicGainValue.textContent = (playerState.musicGain || 100) + '%';
     monitorHint.textContent = monitorToggle.checked ? 'Local monitoring ON' : 'Local monitoring OFF — call transmission continues';
     const status = playerState.playing ? 'Playing' : (playerState.currentTime > 0 ? 'Paused' : 'Stopped');
     playerStatus.textContent = status + (playerState.transmitting ? ' · transmitting to call' : ' · ready for a call');
@@ -265,6 +267,8 @@
   });
   playPause.addEventListener('click', function () { sendPlayerMessage({ type: 'omni-player', action: playerState.playing ? 'pause' : 'play', id: playerState.currentId }, setPlayerState); });
   stopTrack.addEventListener('click', function () { sendPlayerMessage({ type: 'omni-player', action: 'stop' }, setPlayerState); });
+  musicGainSlider.addEventListener('input', function () { musicGainValue.textContent = musicGainSlider.value + '%'; });
+  musicGainSlider.addEventListener('change', function () { sendPlayerMessage({ type: 'omni-player', action: 'musicGain', value: Number(musicGainSlider.value) }, setPlayerState); });
   monitorToggle.addEventListener('change', function () { sendPlayerMessage({ type: 'omni-player', action: 'monitor', value: monitorToggle.checked }, setPlayerState); });
   prevTrack.addEventListener('click', function () { sendPlayerMessage({ type: 'omni-player', action: 'previous' }, setPlayerState); });
   nextTrack.addEventListener('click', function () { sendPlayerMessage({ type: 'omni-player', action: 'next' }, setPlayerState); });

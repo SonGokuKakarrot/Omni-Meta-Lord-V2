@@ -167,3 +167,6 @@ body {
 .track-state { color: #7b8ba0; font-size: 8px; margin-top: 2px; }
 .track-remove { appearance: none; border: 0; background: transparent; color: #7b8ba0; cursor: pointer; font-size: 13px; padding: 3px; }
 .track-remove:hover { color: #ff6688; }
+body { max-height: 600px; overflow-y: auto; overflow-x: hidden; }
+.music-boost { border: 1px solid #28516a; border-radius: 8px; padding: 8px; margin: 0 0 9px; background: rgba(0,229,255,.04); }
+.track-list { max-height: 180px; }

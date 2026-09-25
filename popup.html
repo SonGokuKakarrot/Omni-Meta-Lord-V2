@@ -128,6 +128,11 @@
     </div>
     <input id="audioPicker" class="audio-picker" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm" multiple />
     <label class="upload-btn" for="audioPicker">Add or replace tracks (up to 30)</label>
+    <div class="music-boost">
+      <div class="slider-row"><span class="label-text">Music Volume Booster</span><span class="value-badge" id="musicGainValue">100%</span></div>
+      <input type="range" id="musicGainSlider" min="0" max="1000" step="1" value="100" class="slider" />
+      <div class="slider-labels"><span>0%</span><span>1000%</span></div>
+    </div>
     <label class="toggle-row playback-toggle" for="monitorToggle">
       <span class="label-text">Playback <small id="monitorHint">Local monitoring ON</small></span>
       <input type="checkbox" id="monitorToggle" class="toggle" checked />

@@ -565,7 +565,7 @@
 
   const PlayerEngine = {
     library: [], currentIndex: -1, audioEl: null, sourceNode: null,
-    transmitGain: null, monitorGain: null, playing: false, monitoring: true, resumeWhenCallStarts: false,
+    transmitGain: null, musicBoostGain: null, musicLimiter: null, monitorGain: null, musicGain: 100, playing: false, monitoring: true, resumeWhenCallStarts: false,
     objectUrls: new Map(), connectedChains: new WeakSet(), selectedBeforePlay: false,
 
     init() {
@@ -585,12 +585,19 @@
       if (!this.sourceNode) {
         try {
           this.sourceNode = ctx.createMediaElementSource(this.audioEl);
+          this.musicBoostGain = ctx.createGain();
+          this.musicLimiter = ctx.createDynamicsCompressor();
           this.transmitGain = ctx.createGain();
           this.monitorGain = ctx.createGain();
           // A dedicated monitor branch means disabling Playback never affects call audio.
+          this.musicBoostGain.gain.value = 1;
+          this.musicLimiter.threshold.value = -3;
+          this.musicLimiter.ratio.value = 20;
           this.transmitGain.gain.value = 1;
           this.monitorGain.gain.value = this.monitoring ? 1 : 0;
-          this.sourceNode.connect(this.transmitGain);
+          this.sourceNode.connect(this.musicBoostGain);
+          this.musicBoostGain.connect(this.musicLimiter);
+          this.musicLimiter.connect(this.transmitGain);
           this.sourceNode.connect(this.monitorGain);
           this.monitorGain.connect(ctx.destination);
         } catch (_) { return null; }
@@ -630,6 +637,7 @@
       else if (action === "pause") this.pause();
       else if (action === "stop") this.stop();
       else if (action === "monitor") this.setMonitoring(Boolean(req.value));
+      else if (action === "musicGain") this.setMusicGain(req.value);
       else if (action === "next") this.next();
       else if (action === "previous") this.previous();
       else if (action === "seek") this.seek(req.value);
@@ -717,6 +725,11 @@
       if (this.playing) this.audioEl.pause();
       this.broadcastState();
     },
+    setMusicGain(percent) {
+      this.musicGain = Math.max(0, Math.min(1000, Number(percent) || 0));
+      const ctx = ensureProcessingContext();
+      if (this.musicBoostGain && ctx) this.musicBoostGain.gain.setValueAtTime(this.musicGain / 100, ctx.currentTime);
+    },
     setMonitoring(on) {
       this.monitoring = on;
       const ctx = ensureProcessingContext();
@@ -726,7 +739,7 @@
       const track = this.library[this.currentIndex];
       window.postMessage({ source: "Omni-Universal-Lord", type: "OMNI_PLAYER_STATE", state: {
         currentId: track ? track.id : null, playing: this.playing, currentTime: this.audioEl.currentTime || 0,
-        duration: this.audioEl.duration || 0, trackCount: this.library.length, monitoring: this.monitoring,
+        duration: this.audioEl.duration || 0, trackCount: this.library.length, monitoring: this.monitoring, musicGain: this.musicGain,
         transmitting: Boolean(AudioInterceptor.chains.length && this.transmitGain)
       } }, "*");
     }
