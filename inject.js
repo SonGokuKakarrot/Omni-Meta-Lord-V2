@@ -565,7 +565,7 @@
 
   const PlayerEngine = {
     library: [], currentIndex: -1, audioEl: null, sourceNode: null,
-    transmitGain: null, musicBoostGain: null, musicLimiter: null, monitorGain: null, musicGain: 100, playing: false, monitoring: true, resumeWhenCallStarts: false,
+    transmitGain: null, musicBoostGain: null, musicLimiter: null, musicBassFilter: null, monitorGain: null, musicGain: 100, musicBass: 0, playing: false, monitoring: true, resumeWhenCallStarts: false,
     objectUrls: new Map(), connectedChains: new WeakSet(), selectedBeforePlay: false,
 
     init() {
@@ -587,6 +587,9 @@
           this.sourceNode = ctx.createMediaElementSource(this.audioEl);
           this.musicBoostGain = ctx.createGain();
           this.musicLimiter = ctx.createDynamicsCompressor();
+          this.musicBassFilter = ctx.createBiquadFilter();
+          this.musicBassFilter.type = "lowshelf";
+          this.musicBassFilter.frequency.value = 160;
           this.transmitGain = ctx.createGain();
           this.monitorGain = ctx.createGain();
           // A dedicated monitor branch means disabling Playback never affects call audio.
@@ -596,7 +599,8 @@
           this.transmitGain.gain.value = 1;
           this.monitorGain.gain.value = this.monitoring ? 1 : 0;
           this.sourceNode.connect(this.musicBoostGain);
-          this.musicBoostGain.connect(this.musicLimiter);
+          this.musicBoostGain.connect(this.musicBassFilter);
+          this.musicBassFilter.connect(this.musicLimiter);
           this.musicLimiter.connect(this.transmitGain);
           this.sourceNode.connect(this.monitorGain);
           this.monitorGain.connect(ctx.destination);
@@ -638,6 +642,7 @@
       else if (action === "stop") this.stop();
       else if (action === "monitor") this.setMonitoring(Boolean(req.value));
       else if (action === "musicGain") this.setMusicGain(req.value);
+      else if (action === "musicBass") this.setMusicBass(req.value);
       else if (action === "next") this.next();
       else if (action === "previous") this.previous();
       else if (action === "seek") this.seek(req.value);
@@ -730,6 +735,11 @@
       const ctx = ensureProcessingContext();
       if (this.musicBoostGain && ctx) this.musicBoostGain.gain.setValueAtTime(this.musicGain / 100, ctx.currentTime);
     },
+    setMusicBass(percent) {
+      this.musicBass = Math.max(0, Math.min(100, Number(percent) || 0));
+      const ctx = ensureProcessingContext();
+      if (this.musicBassFilter && ctx) this.musicBassFilter.gain.setValueAtTime(this.musicBass * 0.18, ctx.currentTime);
+    },
     setMonitoring(on) {
       this.monitoring = on;
       const ctx = ensureProcessingContext();
@@ -739,7 +749,7 @@
       const track = this.library[this.currentIndex];
       window.postMessage({ source: "Omni-Universal-Lord", type: "OMNI_PLAYER_STATE", state: {
         currentId: track ? track.id : null, playing: this.playing, currentTime: this.audioEl.currentTime || 0,
-        duration: this.audioEl.duration || 0, trackCount: this.library.length, monitoring: this.monitoring, musicGain: this.musicGain,
+        duration: this.audioEl.duration || 0, trackCount: this.library.length, monitoring: this.monitoring, musicGain: this.musicGain, musicBass: this.musicBass,
         transmitting: Boolean(AudioInterceptor.chains.length && this.transmitGain)
       } }, "*");
     }
@@ -1251,6 +1261,10 @@
 
             <div class="oul-player">
                 <div class="oul-lbl">CALL MUSIC LIBRARY <span id="lbl-playerTrack">0 / 30</span></div>
+                <div class="oul-lbl">MUSIC VOLUME BOOSTER <span id="lbl-musicGain">100%</span></div>
+                <input id="oul-music-gain" type="range" min="0" max="1000" step="1" value="100" style="width:100%" />
+                <div class="oul-lbl">MUSIC BASS <span id="lbl-musicBass">0%</span></div>
+                <input id="oul-music-bass" type="range" min="0" max="100" step="1" value="0" style="width:100%" />
                 <input id="oul-audio-upload" type="file" accept="audio/*" multiple style="width:100%;font-size:10px;margin:4px 0" />
                 <div class="oul-player-controls">
                     <button id="btn-prev" class="oul-btn">PREV</button><button id="btn-play" class="oul-btn">PLAY</button><button id="btn-stop" class="oul-btn">STOP</button><button id="btn-next" class="oul-btn">NEXT</button>
@@ -1348,6 +1362,10 @@
       const upload = document.getElementById("oul-audio-upload");
       const list = document.getElementById("oul-track-list");
       const monitor = document.getElementById("btn-monitor");
+      const musicGain = document.getElementById("oul-music-gain");
+      const musicBass = document.getElementById("oul-music-bass");
+      if (musicGain) musicGain.addEventListener("input", () => { PlayerEngine.setMusicGain(musicGain.value); document.getElementById("lbl-musicGain").textContent = musicGain.value + "%"; });
+      if (musicBass) musicBass.addEventListener("input", () => { PlayerEngine.setMusicBass(musicBass.value); document.getElementById("lbl-musicBass").textContent = musicBass.value + "%"; });
       const refreshTracks = () => {
         if (!list) return;
         document.getElementById("lbl-playerTrack").textContent = PlayerEngine.library.length + " / 30";
