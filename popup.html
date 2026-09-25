@@ -111,24 +111,42 @@
     <button class="preset-btn" data-preset="ultra">Ultra</button>
   </div>
 
-  <section class="player-card">
+  <section class="player-card" aria-label="Call audio music player">
     <div class="player-heading">
       <div>
         <span class="eyebrow">CALL AUDIO PLAYER</span>
-        <h2 id="playerTitle">No track loaded</h2>
+        <h2 id="playerTitle">No track selected</h2>
       </div>
       <span class="track-count" id="trackCount">0/30</span>
     </div>
+    <div class="now-playing">
+      <img id="nowPlayingArtwork" class="now-playing-art" alt="Current track artwork" />
+      <div class="now-playing-details">
+        <strong id="nowPlayingName">Select a song to prepare it for the call</strong>
+        <span id="playerStatus">Stopped · not transmitting</span>
+      </div>
+    </div>
     <input id="audioPicker" class="audio-picker" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm" multiple />
-    <label class="upload-btn" for="audioPicker">Upload up to 30 tracks</label>
+    <label class="upload-btn" for="audioPicker">Add or replace tracks (up to 30)</label>
+    <div class="music-boost">
+      <div class="slider-row"><span class="label-text">Music Volume Booster</span><span class="value-badge" id="musicGainValue">100%</span></div>
+      <input type="range" id="musicGainSlider" min="0" max="1000" step="1" value="100" class="slider" />
+      <div class="slider-labels"><span>0%</span><span>1000%</span></div>
+    </div>
+    <label class="toggle-row playback-toggle" for="monitorToggle">
+      <span class="label-text">Playback <small id="monitorHint">Local monitoring ON</small></span>
+      <input type="checkbox" id="monitorToggle" class="toggle" checked />
+      <span class="toggle-slider"></span>
+    </label>
     <div class="player-controls">
       <button class="player-btn" id="prevTrack" aria-label="Previous track">PREV</button>
       <button class="player-btn player-main" id="playPause" aria-label="Play or pause">PLAY</button>
+      <button class="player-btn" id="stopTrack" aria-label="Stop and reset track">STOP</button>
       <button class="player-btn" id="nextTrack" aria-label="Next track">NEXT</button>
     </div>
     <input id="playerSeek" class="slider" type="range" min="0" max="1000" step="1" value="0" aria-label="Track progress" />
-    <div class="player-meta"><span id="playerTime">0:00 / 0:00</span><span>Boosted into active calls</span></div>
-    <ol class="track-list" id="trackList"></ol>
+    <div class="player-meta"><span id="playerTime">0:00 / 0:00</span><span id="transmitStatus">Ready to transmit to a call</span></div>
+    <ol class="track-list" id="trackList" aria-label="Uploaded songs"></ol>
   </section>
 
   <div class="info-box">
