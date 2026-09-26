@@ -1272,7 +1272,7 @@
                 <button id="btn-monitor" class="oul-btn" style="width:100%;margin-top:5px">PLAYBACK ON</button>
                 <input id="oul-seek" type="range" min="0" max="1000" step="1" value="0" style="width:100%;margin-top:6px" />
                 <div class="oul-player-meta"><span id="lbl-playerTime">0:00 / 0:00</span><span id="lbl-playerStatus">Ready for call</span></div>
-                <div id="oul-track-list" style="max-height:120px;overflow:auto;margin-top:6px"></div>
+                <div id="oul-track-list" role="listbox" aria-label="Uploaded songs" style="max-height:150px;overflow-y:auto;overflow-x:hidden;margin-top:6px;padding-right:3px"></div>
             </div>
         </div>
       `;
@@ -1371,7 +1371,7 @@
         document.getElementById("lbl-playerTrack").textContent = PlayerEngine.library.length + " / 30";
         list.innerHTML = "";
         PlayerEngine.library.forEach((track, index) => {
-          const row = document.createElement("button"); row.className = "oul-btn"; row.style.cssText = "width:100%;margin:2px 0;text-align:left";
+          const row = document.createElement("button"); row.className = "oul-btn oul-track-row"; row.style.cssText = "width:100%;min-height:30px;margin:2px 0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
           row.textContent = (index === PlayerEngine.currentIndex ? "▶ " : "  ") + track.name;
           row.onclick = () => { PlayerEngine.select(track.id); refreshTracks(); };
           list.appendChild(row);
@@ -1461,7 +1461,7 @@
         #oul-panel {
           --accent: #7cf7ff;
           --border: rgba(124,247,255,.55);
-          position: fixed; top: 20px; left: 20px; width: 328px;
+          position: fixed; top: 20px; left: 20px; width: min(300px, calc(100vw - 16px)); height: min(500px, calc(100vh - 16px));
           background-color: rgba(7, 10, 28, 0.9);
           background-image: linear-gradient(145deg, rgba(7, 10, 28, 0.82), rgba(21, 16, 42, 0.74)), var(--theme-gif), linear-gradient(145deg, #193149, #080B10);
           background-size: cover;
@@ -1470,11 +1470,15 @@
           box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 0 28px color-mix(in srgb, var(--accent) 45%, transparent), inset 0 1px 0 rgba(255,255,255,.14);
           border-radius: 22px; color: #fff; z-index: 9999999;
           font-family: 'Segoe UI', system-ui, sans-serif;
-          user-select: none; padding: 12px; backdrop-filter: blur(8px); overflow: hidden; touch-action: none;
+          user-select: none; padding: 10px; backdrop-filter: blur(8px); overflow: hidden; touch-action: none; display: flex; flex-direction: column;
         }
         #oul-bg-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
         #oul-panel.oul-themed { border-color: rgba(174, 235, 255, 0.7); box-shadow: 0 24px 70px rgba(0,0,0,0.6), 0 0 28px rgba(124, 247, 255, 0.3), inset 0 1px 0 rgba(255,255,255,.16); }
         .oul-header, #oul-body { position: relative; z-index: 1; }
+        .oul-header { flex: 0 0 auto; }
+        #oul-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 3px 10px 0; scrollbar-width: thin; scrollbar-color: var(--accent) transparent; }
+        #oul-body::-webkit-scrollbar, #oul-track-list::-webkit-scrollbar { width: 6px; }
+        #oul-body::-webkit-scrollbar-thumb, #oul-track-list::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 99px; }
         .oul-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,.12); padding-bottom: 10px; cursor: move; touch-action: none; }
         .oul-title { font-size: 15px; font-weight: 950; background: linear-gradient(90deg, var(--accent), #ffffff, #ff4fd8); -webkit-background-clip: text; color: transparent; letter-spacing: 1px; }
         .oul-icon-btn { background: transparent; border: none; cursor: pointer; font-size: 10px; opacity: 0.8; color: #fff; padding: 2px 6px; border-radius: 6px; }
@@ -1487,7 +1491,11 @@
         .oul-palette-container { position: relative; height: 16px; border-radius: 8px; overflow: visible; margin-top: 4px; cursor: pointer; touch-action: none; }
         #oul-palette-canvas { width: 100%; height: 100%; border-radius: 8px; display: block; }
         #oul-color-dot { position: absolute; top: 50%; left: 10px; transform: translate(-50%, -50%); width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 2px solid #000; box-shadow: 0 0 6px #fff; pointer-events: none; }
-        .oul-field { margin-bottom: 8px; }
+        .oul-field { margin-bottom: 6px; }
+        .oul-player { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
+        .oul-track-row { display:block; }
+        .oul-player-controls { display:flex; gap:4px; }
+        .oul-player-controls .oul-btn { flex:1; }
         .oul-lbl { display: flex; justify-content: space-between; font-size: 10px; color: #ccc; margin-bottom: 3px; font-weight: 600; }
         .oul-lbl span { color: var(--accent); }
         .oul-enhanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 4px; }
